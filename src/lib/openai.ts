@@ -1,73 +1,46 @@
 import "server-only";
-import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
+import OpenAI from "openai";
+import { zodTextFormat } from "openai/helpers/zod";
+import { z } from "zod";
 import { contentPackageSchema, type ContentPackage } from "@/src/lib/package-schema";
 import type { ReadSourceResult } from "@/src/lib/source-reader";
 
 const DEFAULT_CTA = "Want to learn more about the payments business? Explore Profit from Payments.";
 const DEFAULT_CTA_URL = "https://whop.com/profit-from-payments/?productId=prod_t2yPU9ptXRrV7";
-const DEFAULT_MODEL = "gemini-3.8-flash";
+const DEFAULT_MODEL = "gpt-6-luna";
 
-const outputSchema = {
-  type: Type.OBJECT,
-  properties: {
-    topic: { type: Type.STRING },
-    targetAudience: { type: Type.STRING },
-    contentAngle: { type: Type.STRING },
-    shortTitle: { type: Type.STRING },
-    hook: { type: Type.STRING },
-    voiceoverScript: { type: Type.STRING },
-    scenePlan: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          sceneNumber: { type: Type.INTEGER },
-          purpose: { type: Type.STRING },
-          durationSeconds: { type: Type.INTEGER },
-          spokenLine: { type: Type.STRING },
-          visualDescription: { type: Type.STRING },
-          onScreenText: { type: Type.STRING },
-          flowPrompt: { type: Type.STRING },
-        },
-        required: ["sceneNumber", "purpose", "durationSeconds", "spokenLine", "visualDescription", "onScreenText", "flowPrompt"],
-      },
-    },
-    fullFlowPrompt: { type: Type.STRING },
-    globalFlowConsistencyPrompt: { type: Type.STRING },
-    youtubeTitle: { type: Type.STRING },
-    youtubeDescription: { type: Type.STRING },
-    linkedinPost: { type: Type.STRING },
-    ctaText: { type: Type.STRING },
-    ctaUrl: { type: Type.STRING },
-    sources: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: { id: { type: Type.STRING }, title: { type: Type.STRING } },
-        required: ["id", "title"],
-      },
-    },
-    claims: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          claim: { type: Type.STRING },
-          sourceIds: { type: Type.ARRAY, items: { type: Type.STRING } },
-          supportingExcerpt: { type: Type.STRING },
-          status: { type: Type.STRING, enum: ["supported", "needs_review"] },
-        },
-        required: ["claim", "sourceIds", "supportingExcerpt", "status"],
-      },
-    },
-    humanReviewNotes: { type: Type.ARRAY, items: { type: Type.STRING } },
-  },
-  required: [
-    "topic", "targetAudience", "contentAngle", "shortTitle", "hook", "voiceoverScript", "scenePlan",
-    "fullFlowPrompt", "globalFlowConsistencyPrompt", "youtubeTitle", "youtubeDescription", "linkedinPost",
-    "ctaText", "ctaUrl", "sources", "claims", "humanReviewNotes",
-  ],
-};
+const outputSchema = z.object({
+  topic: z.string(),
+  targetAudience: z.string(),
+  contentAngle: z.string(),
+  shortTitle: z.string(),
+  hook: z.string(),
+  voiceoverScript: z.string(),
+  scenePlan: z.array(z.object({
+    sceneNumber: z.number().int(),
+    purpose: z.string(),
+    durationSeconds: z.number().int(),
+    spokenLine: z.string(),
+    visualDescription: z.string(),
+    onScreenText: z.string(),
+    flowPrompt: z.string(),
+  })),
+  fullFlowPrompt: z.string(),
+  globalFlowConsistencyPrompt: z.string(),
+  youtubeTitle: z.string(),
+  youtubeDescription: z.string(),
+  linkedinPost: z.string(),
+  ctaText: z.string(),
+  ctaUrl: z.string(),
+  sources: z.array(z.object({ id: z.string(), title: z.string() })),
+  claims: z.array(z.object({
+    claim: z.string(),
+    sourceIds: z.array(z.string()),
+    supportingExcerpt: z.string(),
+    status: z.enum(["supported", "needs_review"]),
+  })),
+  humanReviewNotes: z.array(z.string()),
+});
 
 export type BriefInput = {
   recentTopics: string[];
@@ -126,36 +99,28 @@ export async function generateEditorialPackage(
   brief: BriefInput,
   readSources: ReadSourceResult[],
 ): Promise<ContentPackage> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not configured.");
-  const model = process.env.GEMINI_TEXT_MODEL || DEFAULT_MODEL;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY is not configured.");
+  const model = process.env.OPENAI_MODEL || DEFAULT_MODEL;
   if (model !== DEFAULT_MODEL) throw new Error(`This prototype only supports ${DEFAULT_MODEL}.`);
-  const client = new GoogleGenAI({ apiKey });
-  const response = await client.models.generateContent({
+  const client = new OpenAI({ apiKey });
+  const response = await client.responses.parse({
     model: DEFAULT_MODEL,
-    contents: buildPrompt(brief, readSources),
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: outputSchema,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-    },
+    reasoning: { effort: "low" },
+    input: [{ role: "user", content: buildPrompt(brief, readSources) }],
+    text: { format: zodTextFormat(outputSchema, "editorial_package") },
   });
 
-  if (!response.text) throw new Error("Gemini returned an empty response.");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(response.text);
-  } catch {
-    throw new Error("Gemini returned invalid JSON. Please try again.");
-  }
+  const parsed: unknown = response.output_parsed;
+  if (!parsed) throw new Error("OpenAI returned no structured content. Please try again.");
 
   const result = contentPackageSchema.safeParse(parsed);
-  if (!result.success) throw new Error("Gemini's response did not match the required content format. Please try again.");
+  if (!result.success) throw new Error("OpenAI's response did not match the required content format. Please try again.");
   const normalizedTopic = result.data.topic.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   const repeatsRecentTopic = brief.recentTopics.some((topic) =>
     topic.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim() === normalizedTopic
   );
-  if (repeatsRecentTopic) throw new Error("Gemini selected a recently used topic. Choose “Propose another” to try again.");
+  if (repeatsRecentTopic) throw new Error("OpenAI selected a recently used topic. Choose “Propose another” to try again.");
   const expectedSceneNumbers = result.data.scenePlan.every((scene, index) => scene.sceneNumber === index + 1);
   const scriptFromScenes = result.data.scenePlan.map((scene) => scene.spokenLine).join(" ");
   if (!expectedSceneNumbers || normalizeSpokenText(scriptFromScenes) !== normalizeSpokenText(result.data.voiceoverScript)) {

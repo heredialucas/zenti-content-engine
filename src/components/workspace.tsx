@@ -309,7 +309,7 @@ function ExtraSourceControls({
             {document && <button className="btn btn-quiet btn-small" disabled={busy} onClick={clearFile} type="button">Remove</button>}
           </div>
           {document && <p className="selected-file">Selected: {document.name} · {(document.size / 1_000_000).toFixed(1)} MB</p>}
-          <p className="source-privacy-note">Selected material is sent to Gemini with each package request. The app does not save the file; the generated package and source links stay in this browser. Use public, non-confidential material only.</p>
+          <p className="source-privacy-note">Selected material is sent to OpenAI with each package request. The app does not save the file; the generated package and source links stay in this browser. Use public, non-confidential material only.</p>
           {error && <p className="source-input-error" role="alert">{error}</p>}
         </div>
       </details>
@@ -656,7 +656,7 @@ export function Workspace() {
           </>
         )}
 
-        <footer className="workspace-footer">Independent prototype · Not endorsed by Zenti · Gemini text requests may use API quota or billing</footer>
+        <footer className="workspace-footer">Independent prototype · Not endorsed by Zenti · OpenAI text requests may use API quota or billing</footer>
       </div>
     </main>
   );

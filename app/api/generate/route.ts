@@ -3,7 +3,7 @@ import { z } from "zod";
 import { SOURCES } from "@/src/lib/catalog";
 import { hasSession, isSameOrigin } from "@/src/lib/auth";
 import { readAdditionalUrl, readUploadedDocument } from "@/src/lib/additional-source-reader";
-import { generateEditorialPackage } from "@/src/lib/gemini";
+import { generateEditorialPackage } from "@/src/lib/openai";
 import { readApprovedSource } from "@/src/lib/source-reader";
 
 export const runtime = "nodejs";
@@ -54,7 +54,7 @@ async function readLimitedFormData(request: Request, maxBytes: number): Promise<
 export async function POST(request: Request) {
   if (!isSameOrigin(request)) return NextResponse.json({ error: "Request origin was rejected." }, { status: 403 });
   if (!(await hasSession())) return NextResponse.json({ error: "Your session expired. Sign in again." }, { status: 401 });
-  if (!process.env.GEMINI_API_KEY) return NextResponse.json({ error: "Gemini is not configured yet. Add GEMINI_API_KEY to your local environment or Vercel settings." }, { status: 503 });
+  if (!process.env.OPENAI_API_KEY) return NextResponse.json({ error: "OpenAI is not configured yet. Add OPENAI_API_KEY to your local environment or Vercel settings." }, { status: 503 });
 
   try {
     const length = Number(request.headers.get("content-length") ?? 0);
@@ -118,10 +118,10 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Generation failed. Please try again.";
-    if (message.includes("GEMINI_API_KEY")) return NextResponse.json({ error: message }, { status: 503 });
-    if (message.includes("invalid JSON") || message.includes("required content format") || message.includes("recently used topic") || message.includes("Scene dialogue did not match")) {
+    if (message.includes("OPENAI_API_KEY")) return NextResponse.json({ error: message }, { status: 503 });
+    if (message.includes("structured content") || message.includes("required content format") || message.includes("recently used topic") || message.includes("Scene dialogue did not match")) {
       return NextResponse.json({ error: message }, { status: 502 });
     }
-    return NextResponse.json({ error: "Could not generate the package. Check your Gemini API setup and try again." }, { status: 502 });
+    return NextResponse.json({ error: "Could not generate the package. Check your OpenAI API setup and try again." }, { status: 502 });
   }
 }
