@@ -1,0 +1,12 @@
+node_modules/
+.next/
+out/
+build/
+coverage/
+.vercel/
+.agents/skills/
+skills-lock.json
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
