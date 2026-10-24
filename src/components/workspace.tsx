@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useEffect, useState, type KeyboardEvent } from "react";
+import { startTransition, useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import {
   AlertTriangle,
   ArrowDownToLine,
@@ -19,7 +19,8 @@ import { SOURCES } from "@/src/lib/catalog";
 import type { ContentPackage } from "@/src/lib/package-schema";
 
 type PackageTab = "overview" | "content" | "scenes" | "metrics";
-type SourceState = { status: "read" | "unavailable"; error?: string };
+type SourceKind = "official" | "link" | "document";
+type SourceState = { status: "read" | "unavailable"; error?: string; title?: string; url?: string; kind?: SourceKind };
 type SourceStatuses = Record<string, SourceState>;
 
 const PACKAGE_KEY = "zenti:last-package:v1";
@@ -27,6 +28,9 @@ const SOURCE_STATUS_KEY = "zenti:last-source-statuses:v1";
 const RECENT_TOPICS_KEY = "zenti:recent-topics:v1";
 const LEGACY_LANGUAGE_KEY = "zenti:content-language:v1";
 const MAX_RECENT_TOPICS = 8;
+const MAX_EXTRA_FILE_BYTES = 3_000_000;
+const ALLOWED_SOURCE_IDS = new Set([...SOURCES.map((source) => source.id), "additional-link", "additional-document"]);
+const SENSITIVE_QUERY_KEY = /^(?:access[_-]?token|api[_-]?key|auth(?:orization)?|code|credential|jwt|key|password|passwd|secret|session(?:id)?|sig(?:nature)?|token)$/i;
 
 const PACKAGE_TABS: { id: PackageTab; label: string; icon: typeof FileText }[] = [
   { id: "overview", label: "Overview", icon: Sparkles },
@@ -98,7 +102,7 @@ ${result.linkedinPost}
 
 ## Sources actually read
 
-${result.sources.map((source) => `- [${source.title}](${source.url})`).join("\n")}
+${result.sources.map((source) => source.url ? `- [${source.title}](${source.url})` : `- ${source.title} (uploaded document)`).join("\n")}
 
 ## Claims to review
 
@@ -116,6 +120,13 @@ function isStoredPackage(value: unknown): value is ContentPackage {
   return requiredText.every((field) => typeof data[field] === "string")
     && Array.isArray(data.scenePlan)
     && Array.isArray(data.sources)
+    && data.sources.every((source) => {
+      if (!source || typeof source !== "object") return false;
+      const item = source as Record<string, unknown>;
+      return typeof item.id === "string" && typeof item.title === "string"
+        && (item.url === undefined || isSafeHttpsUrl(item.url))
+        && (item.kind === undefined || item.kind === "official" || item.kind === "link" || item.kind === "document");
+    })
     && Array.isArray(data.claims)
     && Array.isArray(data.humanReviewNotes);
 }
@@ -141,16 +152,47 @@ function safeSourceStatuses(value: unknown): SourceStatuses {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const record = value as Record<string, unknown>;
   const statuses: SourceStatuses = {};
-  for (const source of SOURCES) {
-    const candidate = record[source.id];
+  for (const id of ALLOWED_SOURCE_IDS) {
+    const candidate = record[id];
     if (!candidate || typeof candidate !== "object" || !("status" in candidate)) continue;
     if (candidate.status !== "read" && candidate.status !== "unavailable") continue;
-    statuses[source.id] = {
+    const metadata = candidate as Record<string, unknown>;
+    const url = isSafeHttpsUrl(metadata.url) ? metadata.url : undefined;
+    statuses[id] = {
       status: candidate.status,
-      ...( "error" in candidate && typeof candidate.error === "string" ? { error: candidate.error.slice(0, 180) } : {}),
+      ...(typeof metadata.error === "string" ? { error: metadata.error.slice(0, 180) } : {}),
+      ...(typeof metadata.title === "string" ? { title: metadata.title.slice(0, 160) } : {}),
+      ...(url ? { url } : {}),
+      ...(metadata.kind === "official" || metadata.kind === "link" || metadata.kind === "document" ? { kind: metadata.kind } : {}),
     };
   }
   return statuses;
+}
+
+function isSafeHttpsUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function validateAdditionalUrl(value: string): string | null {
+  if (!value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) {
+      return "Use a public HTTPS link without sign-in details or a custom port.";
+    }
+    if ([...url.searchParams.keys()].some((key) => SENSITIVE_QUERY_KEY.test(key))) {
+      return "Remove access tokens or credentials from the link before adding it.";
+    }
+    return null;
+  } catch {
+    return "Enter a valid HTTPS link.";
+  }
 }
 
 function downloadPackage(result: ContentPackage) {
@@ -188,10 +230,100 @@ function LoadingMark() {
   return <span className="loading-mark" aria-hidden="true"><i /><i /><i /></span>;
 }
 
+function ExtraSourceControls({
+  additionalUrl,
+  document,
+  error,
+  busy,
+  onUrlChange,
+  onDocumentChange,
+  onError,
+}: {
+  additionalUrl: string;
+  document: File | null;
+  error: string;
+  busy: boolean;
+  onUrlChange: (value: string) => void;
+  onDocumentChange: (file: File | null) => void;
+  onError: (message: string) => void;
+}) {
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  function chooseFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) return;
+    const extension = file.name.toLowerCase().split(".").at(-1);
+    if (extension !== "pdf" && extension !== "txt") {
+      onError("Choose a PDF or TXT document.");
+      event.target.value = "";
+      return;
+    }
+    if (file.size > MAX_EXTRA_FILE_BYTES) {
+      onError("Documents must be 3 MB or smaller.");
+      event.target.value = "";
+      return;
+    }
+    onError("");
+    onDocumentChange(file);
+  }
+
+  function clearFile() {
+    onDocumentChange(null);
+    if (fileInput.current) fileInput.current.value = "";
+  }
+
+  return (
+    <div className="source-inputs">
+      <details className="approved-sources">
+        <summary>4 Zenti sources included automatically</summary>
+        <ul>{SOURCES.map((source) => <li key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul>
+      </details>
+      <details className="extra-source-details">
+        <summary>Add a public link or document <span>Optional</span></summary>
+        <div className="extra-source-fields">
+          <label htmlFor="additional-source-url">Public HTTPS link</label>
+          <input
+            autoComplete="off"
+            className="control"
+            disabled={busy}
+            id="additional-source-url"
+            maxLength={2_048}
+            name="additionalUrl"
+            onChange={(event) => { onUrlChange(event.target.value); onError(""); }}
+            placeholder="https://…"
+            type="url"
+            value={additionalUrl}
+          />
+          <label htmlFor="additional-source-file">PDF or TXT document · up to 3 MB</label>
+          <div className="file-picker-row">
+            <input
+              accept=".pdf,.txt,application/pdf,text/plain"
+              className="file-input"
+              disabled={busy}
+              id="additional-source-file"
+              name="document"
+              onChange={chooseFile}
+              ref={fileInput}
+              type="file"
+            />
+            {document && <button className="btn btn-quiet btn-small" disabled={busy} onClick={clearFile} type="button">Remove</button>}
+          </div>
+          {document && <p className="selected-file">Selected: {document.name} · {(document.size / 1_000_000).toFixed(1)} MB</p>}
+          <p className="source-privacy-note">Selected material is sent to Gemini with each package request. The app does not save the file; the generated package and source links stay in this browser. Use public, non-confidential material only.</p>
+          {error && <p className="source-input-error" role="alert">{error}</p>}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 export function Workspace() {
   const [result, setResult] = useState<ContentPackage | null>(null);
   const [sourceStatuses, setSourceStatuses] = useState<SourceStatuses>({});
   const [recentTopics, setRecentTopics] = useState<string[]>([]);
+  const [additionalUrl, setAdditionalUrl] = useState("");
+  const [additionalDocument, setAdditionalDocument] = useState<File | null>(null);
+  const [sourceInputError, setSourceInputError] = useState("");
   const [activeTab, setActiveTab] = useState<PackageTab>("overview");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -229,19 +361,32 @@ export function Workspace() {
 
   async function createNextPackage() {
     if (busy) return;
+    const extraUrlError = validateAdditionalUrl(additionalUrl);
+    if (extraUrlError) {
+      setSourceInputError(extraUrlError);
+      return;
+    }
+    if (additionalDocument && additionalDocument.size > MAX_EXTRA_FILE_BYTES) {
+      setSourceInputError("Documents must be 3 MB or smaller.");
+      return;
+    }
+    setSourceInputError("");
     setBusy(true);
     setError("");
 
     try {
+      const formData = new FormData();
+      formData.set("recentTopics", JSON.stringify(recentTopics));
+      formData.set("additionalUrl", additionalUrl.trim());
+      if (additionalDocument) formData.set("document", additionalDocument, additionalDocument.name);
       const response = await fetch("/api/generate", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ recentTopics }),
+        body: formData,
       });
       const payload: {
         contentPackage?: unknown;
         error?: string;
-        sourceStatuses?: { id: string; status: "read" | "unavailable"; error?: string }[];
+        sourceStatuses?: { id: string; status: "read" | "unavailable"; error?: string; title?: string; url?: string; kind?: SourceKind }[];
       } = await response.json();
 
       if (payload.sourceStatuses) {
@@ -311,6 +456,15 @@ export function Workspace() {
             <p className="eyebrow">Editorial workspace</p>
             <h1>Create the next package.</h1>
             <p className="start-copy">A source-backed idea, script, social copy, and scene prompts—without writing a brief.</p>
+            <ExtraSourceControls
+              additionalUrl={additionalUrl}
+              document={additionalDocument}
+              error={sourceInputError}
+              busy={busy}
+              onUrlChange={setAdditionalUrl}
+              onDocumentChange={setAdditionalDocument}
+              onError={setSourceInputError}
+            />
             <button className="btn btn-primary btn-large" type="button" onClick={createNextPackage} disabled={busy || !ready}>
               {busy ? <><LoadingMark /> Reading sources & building your package…</> : <><Sparkles size={16} aria-hidden="true" /> Create next package</>}
             </button>
@@ -329,15 +483,29 @@ export function Workspace() {
                 <p className="result-audience">For {result.targetAudience.toLowerCase()}</p>
               </div>
               <div className="result-actions">
-                <button className="btn btn-primary" type="button" onClick={createNextPackage} disabled={busy}>
-                  {busy ? <><LoadingMark /> Creating…</> : <><RotateCw size={15} aria-hidden="true" /> Propose another</>}
-                </button>
                 <CopyButton text={packageAsMarkdown(result)} label="Copy package" />
                 <button className="btn btn-quiet btn-small" type="button" onClick={() => downloadPackage(result)}>
                   <ArrowDownToLine size={14} aria-hidden="true" /> Download
                 </button>
               </div>
             </header>
+
+            <ExtraSourceControls
+              additionalUrl={additionalUrl}
+              document={additionalDocument}
+              error={sourceInputError}
+              busy={busy}
+              onUrlChange={setAdditionalUrl}
+              onDocumentChange={setAdditionalDocument}
+              onError={setSourceInputError}
+            />
+
+            <div className="repeat-action-row">
+              <button className="btn btn-primary" type="button" onClick={createNextPackage} disabled={busy}>
+                {busy ? <><LoadingMark /> Creating…</> : <><RotateCw size={15} aria-hidden="true" /> Propose another</>}
+              </button>
+              <span>Uses the sources selected above.</span>
+            </div>
 
             {error && <div className="status-message status-error" role="alert">{error}</div>}
             {busy && <div className="progress-line" role="status">Finding a fresh angle and building the complete package…</div>}
@@ -364,6 +532,7 @@ export function Workspace() {
             <section className="tab-panel" id="package-tab-panel" role="tabpanel" aria-labelledby={`package-tab-${activeTab}`} tabIndex={0}>
               <div className="sr-only" aria-live="polite">Showing {activeTabLabel}</div>
               {activeTab === "overview" && <>
+                {unavailableCount > 0 && <div className="source-warning" role="status">{unavailableCount} source{unavailableCount === 1 ? " was" : "s were"} unavailable and not used. See Sources & fact review below.</div>}
                 <section className="overview-hook">
                   <div className="section-heading"><h2>Opening hook</h2><CopyButton text={result.hook} label="Copy hook" subtle /></div>
                   <blockquote className="hook-quote">“{result.hook}”</blockquote>
@@ -388,14 +557,14 @@ export function Workspace() {
                   <div className="disclosure-content">
                     <p className="section-note">Only pages actually read for this package appear as sources. Verify claims against the original pages before using them.</p>
                     <ul className="source-audit-list">
-                      {SOURCES.map((source) => {
-                        const state = sourceStatuses[source.id];
-                        const included = result.sources.some((item) => item.id === source.id);
-                        return <li className={included ? "source-read" : "source-unavailable"} key={source.id}>
-                          {included ? <CheckCircle2 size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}
-                          <span><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a><small>{included ? "Read for this package" : state?.error || "Not read; not used"}</small></span>
-                        </li>;
-                      })}
+                      {result.sources.map((source) => <li className="source-read" key={source.id}>
+                        <CheckCircle2 size={15} aria-hidden="true" />
+                        <span>{source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a> : <span>{source.title}</span>}<small>{source.kind === "document" ? "Uploaded document · read for this package" : source.kind === "link" ? "Extra link · read for this package" : "Read for this package"}</small></span>
+                      </li>)}
+                      {Object.entries(sourceStatuses).filter(([id, status]) => status.status === "unavailable" && !result.sources.some((source) => source.id === id)).map(([id, source]) => <li className="source-unavailable" key={id}>
+                        <AlertTriangle size={15} aria-hidden="true" />
+                        <span>{source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.title ?? source.url}</a> : <span>{source.title ?? "Extra document"}</span>}<small>{source.error || "Not read; not used"}</small></span>
+                      </li>)}
                     </ul>
                     <div className="claim-audit">
                       <h3>Claims to review</h3>

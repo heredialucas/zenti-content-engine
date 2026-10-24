@@ -3,7 +3,8 @@ import { z } from "zod";
 export const sourceSchema = z.object({
   id: z.string(),
   title: z.string(),
-  url: z.url(),
+  url: z.url().optional(),
+  kind: z.enum(["official", "link", "document"]).optional(),
 });
 
 export const claimSchema = z.object({
@@ -38,7 +39,7 @@ export const contentPackageSchema = z.object({
   linkedinPost: z.string().min(1).max(2200),
   ctaText: z.string().min(1).max(300),
   ctaUrl: z.url(),
-  sources: z.array(sourceSchema).min(1).max(4),
+  sources: z.array(sourceSchema).min(1).max(6),
   claims: z.array(claimSchema).max(20),
   humanReviewNotes: z.array(z.string().max(500)).max(12),
 });

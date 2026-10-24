@@ -43,8 +43,8 @@ const outputSchema = {
       type: Type.ARRAY,
       items: {
         type: Type.OBJECT,
-        properties: { id: { type: Type.STRING }, title: { type: Type.STRING }, url: { type: Type.STRING } },
-        required: ["id", "title", "url"],
+        properties: { id: { type: Type.STRING }, title: { type: Type.STRING } },
+        required: ["id", "title"],
       },
     },
     claims: {
@@ -78,7 +78,7 @@ const FIXED_AUDIENCE = "Prospective referral partners exploring the payments bus
 function buildPrompt(brief: BriefInput, sources: ReadSourceResult[]): string {
   const referenceText = sources
     .filter((item): item is ReadSourceResult & { text: string } => item.status === "read" && Boolean(item.text))
-    .map(({ source, text }) => `--- SOURCE ${source.id}: ${source.title} (${source.url}) ---\n${text}\n--- END SOURCE ---`)
+    .map(({ source, text }) => `--- SOURCE ${source.id}: ${source.title}${source.url ? ` (${source.url})` : " (user-provided document)"} ---\n${text}\n--- END SOURCE ---`)
     .join("\n\n");
 
   return `You are an evidence-conscious editorial writer for a prototype called Zenti Content Engine. Write a useful, accurate short-form content package.
@@ -165,7 +165,7 @@ export async function generateEditorialPackage(
   const fetched = readSources.filter((item) => item.status === "read");
   const sourceById = new Map<string, (typeof fetched)[number]>(fetched.map((item) => [item.source.id, item]));
   const fetchedText = new Map<string, string>(fetched.map((item) => [item.source.id, item.text ?? ""]));
-  const packageSources = fetched.map(({ source }) => ({ id: source.id, title: source.title, url: source.url }));
+  const packageSources = fetched.map(({ source }) => source);
   const claims = result.data.claims.map((claim) => {
     const validSourceIds = claim.sourceIds.filter((id) => sourceById.has(id));
     const excerpt = claim.supportingExcerpt.toLowerCase().replace(/\s+/g, " ").trim();

@@ -6,7 +6,7 @@ An independent, private editorial workspace that chooses a source-backed topic a
 
 ## Requirements
 
-- Node.js 20.9 or later
+- Node.js 22 or later (PDF extraction uses `unpdf`)
 - pnpm 10+
 - A Gemini API key for content generation
 
@@ -61,9 +61,12 @@ Local OpenCode skills are installed with `autoskills` for development; they are 
 
 ## What it does
 
-- Reads only the four hard-coded URLs in `src/lib/catalog.ts`; arbitrary URLs and crawler behavior are not supported.
-- Checks HTTP(S), the exact approved redirect targets, DNS resolution, and private/reserved IP ranges before requesting a source. Each response has a timeout and a 450 KB response-size limit; extracted text sent to Gemini is capped per page.
-- Marks pages read or unavailable for each generation. If all approved pages fail, generation stops. Only successfully read pages are cited in the package.
+- Always reads the four hard-coded pages in `src/lib/catalog.ts`; optionally accepts one extra public URL and one PDF/TXT upload. It does not crawl links.
+- Lets the user optionally add one extra public HTTPS link and one PDF or TXT document (3 MB max). Extra text is extracted in memory and included for that request only; files are not stored by the app. Do not submit confidential or login-protected material.
+- Pins each external HTTPS request to a DNS-validated public address, blocks private/reserved destinations and credential URLs, and rechecks safe redirects. PDF extraction is limited to 12 pages and does not run OCR.
+- PDF files must be text-readable, unencrypted, and no longer than 12 pages. Scanned/image-only PDFs are reported as unavailable; OCR is not performed.
+- Checks catalog redirects against the allowlist; extra URLs must use HTTPS and pass DNS/IP safety checks on every redirect. Requests have a timeout and size cap, and extracted source text is bounded before Gemini receives it.
+- Marks every source read or unavailable for each generation. If no approved or extra source can be read, generation stops. Only successfully read material is cited in the package.
 - Calls Gemini only from `app/api/generate/route.ts`, using `@google/genai`, structured JSON output, and Zod server-side validation. The default model is `gemini-3.8-flash` with low thinking effort.
 - Verifies that any claim marked `supported` includes a sufficiently long verbatim excerpt in one of its cited, successfully fetched pages. Other claims are downgraded to `needs_review`.
 - Generates in English only. Stores the last package, source statuses, and up to eight recent topic labels in versioned browser `localStorage`. No database, external analytics, or server-side content history is used.

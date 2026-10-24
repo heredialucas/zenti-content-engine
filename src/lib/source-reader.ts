@@ -8,14 +8,21 @@ const MAX_TEXT_CHARS = 14_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
+export type SourceReference = {
+  id: string;
+  title: string;
+  url?: string;
+  kind: "official" | "link" | "document";
+};
+
 export type ReadSourceResult = {
-  source: SourceRecord;
+  source: SourceReference;
   status: "read" | "unavailable";
   text?: string;
   error?: string;
 };
 
-function isPublicIp(address: string): boolean {
+export function isPublicIp(address: string): boolean {
   const version = isIP(address);
   if (version === 4) {
     const octets = address.split(".").map(Number);
@@ -27,14 +34,23 @@ function isPublicIp(address: string): boolean {
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 0) ||
       (a === 192 && b === 168) ||
+      (a === 192 && b === 88 && octets[2] === 99) ||
       (a === 198 && (b === 18 || b === 19)) ||
+      (a === 198 && b === 51 && octets[2] === 100) ||
+      (a === 203 && b === 0 && octets[2] === 113) ||
       a >= 224
     );
   }
   if (version === 6) {
     const normalized = address.toLowerCase();
-    const firstHextet = Number.parseInt(normalized.split(":", 1)[0] || "0", 16);
-    return firstHextet >= 0x2000 && firstHextet <= 0x3fff && !normalized.startsWith("2001:db8:");
+    const parts = normalized.split(":");
+    const firstHextet = Number.parseInt(parts[0] || "0", 16);
+    const secondHextet = Number.parseInt(parts[1] || "0", 16);
+    const globallyRoutable = firstHextet >= 0x2000 && firstHextet <= 0x3fff;
+    const reservedDocumentation = (firstHextet === 0x2001 && (secondHextet <= 0x01ff || secondHextet === 0x0db8))
+      || firstHextet === 0x2002
+      || (firstHextet === 0x3fff && secondHextet <= 0x0fff);
+    return globallyRoutable && !reservedDocumentation;
   }
   return false;
 }
@@ -93,7 +109,7 @@ function decodeEntities(text: string): string {
     .replace(/&([a-z]+);/gi, (entity, name: string) => named[name.toLowerCase()] ?? entity);
 }
 
-function extractText(html: string): string {
+export function extractText(html: string): string {
   return decodeEntities(
     html
       .replace(/<!--[\s\S]*?-->/g, " ")
@@ -109,6 +125,12 @@ function extractText(html: string): string {
 }
 
 export async function readApprovedSource(source: SourceRecord): Promise<ReadSourceResult> {
+  const sourceReference: SourceReference = {
+    id: source.id,
+    title: source.title,
+    url: source.url,
+    kind: "official",
+  };
   let current: URL;
   try {
     current = new URL(source.url);
@@ -133,7 +155,7 @@ export async function readApprovedSource(source: SourceRecord): Promise<ReadSour
 
       const text = extractText(await readLimitedBody(response));
       if (text.length < 200) throw new Error("Source page did not contain enough readable text.");
-      return { source, status: "read", text };
+      return { source: sourceReference, status: "read", text };
     }
     throw new Error("Source redirect could not be followed safely.");
   } catch (error) {
@@ -144,7 +166,7 @@ export async function readApprovedSource(source: SourceRecord): Promise<ReadSour
         : error instanceof Error
           ? error.message
           : "Could not read this page.";
-    return { source, status: "unavailable", error: safeMessage };
+    return { source: sourceReference, status: "unavailable", error: safeMessage };
   }
 }
 
